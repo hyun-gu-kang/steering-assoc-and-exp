@@ -209,9 +209,9 @@ def save_mean_acts(
             }
         }
     """
-    save_dir = os.path.join(model_name, save_name)
+    save_dir = os.path.join(base_dir, model_name)
     if fold_name is not None:
-        save_dir = os.path.join(save_dir, fold_name)
+        save_dir = os.path.join(base_dir, model_name, fold_name)
     os.makedirs(save_dir, exist_ok=True)
 
     file_path = os.path.join(save_dir, f"{act_name}.pt")

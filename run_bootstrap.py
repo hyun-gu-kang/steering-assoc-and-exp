@@ -4,7 +4,7 @@ Item bootstrap WITHIN folds for Delta RSA (steered - base).
 Design (same fold structure as run_steering_analysis.py / the poster)
 --------------------------------------------------------------------
 * Fold k: steering vectors computed on the training items; RSA on the fold's
-  20 held-out sentences (5 items x 4 conditions). Only pairs of sentences from
+  80 held-out sentences (20 items x 4 conditions). Only pairs of sentences from
   the SAME fold are correlated, so both sentences of every pair were unseen by
   the vector that steered them.
 * Statistic = mean over folds of d_k = rho_steered,k - rho_base,k
