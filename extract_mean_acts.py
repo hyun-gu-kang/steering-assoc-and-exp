@@ -34,7 +34,7 @@ EXP_NAME = "erp"
 BATCH_SIZE = 256
 MAX_LENGTH = 512
 
-N_FOLDS = 5
+N_FOLDS = 6
 FOLD_SIZE = 20  
 N_SAMPLES = 100
 
@@ -136,6 +136,3 @@ for i in range(N_FOLDS):
         del text, mean_acts
         gc.collect()
         torch.cuda.empty_cache()
-
-if __name__ == "__main__":
-    main()

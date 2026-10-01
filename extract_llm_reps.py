@@ -195,17 +195,21 @@ def main():
     # --------------------------------------------------------
     stim_full = pd.read_csv(input_path, sep=";")
 
-    N_FOLDS = 5
+    N_FOLDS = 6
     FOLD_SIZE = 20
-    N_ITEMS = len(stim_full)  # 120
+    items = sorted(stim_full["ItemNum"].unique())          # 120 items
+    assert items == list(range(1, 121)), "ItemNum must be 1..120 (same order as extract.py)"
+    N_ITEMS = len(items)
 
     for i in range(N_FOLDS):
         fold_name = f"fold{i}"
 
         # Held-out block = the 20 items that fold i's extract.py run
         # did NOT use when computing the diffmean steering vectors.
-        held_start = (i * FOLD_SIZE + 100) % N_ITEMS
-        stim = stim_full.iloc[held_start:held_start + FOLD_SIZE].reset_index(drop=True)
+        held_pos = [(i * FOLD_SIZE + 100 + j) % N_ITEMS for j in range(FOLD_SIZE)]
+        held_items = [items[p] for p in held_pos]
+        stim = stim_full[stim_full["ItemNum"].isin(held_items)].reset_index(drop=True)   # 80 sentences
+        assert stim.groupby("Condition").size().eq(FOLD_SIZE).all(), stim.groupby("Condition").size()
 
         print("#" * 70)
         print(f"Fold: {fold_name} | held-out items: {stim['ItemNum'].tolist()}")
