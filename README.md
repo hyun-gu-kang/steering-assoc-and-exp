@@ -28,8 +28,9 @@ The project uses contrastive activation steering (difference-in-means, Rimsky et
                │  *_steering_fold{k}.pkl
                ▼
  ┌───────────────────────────┐
- │ 4. run_steering_analysis  │  RSA per fold (Stage 1) + fold aggregation,
- └─────────────┬─────────────┘  COM, clustering, heatmaps, line plots (Stage 2)
+ │ 4. fold-wise RSA          │  RSA per condition × fold on the held-out items
+ │    (not yet released)     │  (run_steering_analysis.py, see below)
+ └─────────────┬─────────────┘
                │  rsa_results.npz per condition × fold
        ┌───────┼──────────────────────────┐
        ▼       ▼                          ▼
@@ -52,7 +53,7 @@ The project uses contrastive activation steering (difference-in-means, Rimsky et
 | Effect measure | Δρ = ρ_steered − ρ_base (Spearman RSA), paired within fold |
 | Statistics | One-sample *t*-test over the 6 fold-wise Δρ; stratified item bootstrap (10,000 resamples); BH-FDR |
 
-Fold *k* holds out the items at positions `(20k + 100 + j) mod 120`, `j = 0…19`, so fold 0 holds out items 101–120, fold 1 holds out items 1–20, and so on. The held-out sets do not overlap, and `run_steering_analysis.py` and `run_bootstrap.py` check this.
+Fold *k* holds out the items at positions `(20k + 100 + j) mod 120`, `j = 0…19`, so fold 0 holds out items 101–120, fold 1 holds out items 1–20, and so on. The held-out sets do not overlap, and `run_bootstrap.py` checks this.
 
 ---
 
@@ -81,16 +82,17 @@ Calibrates the steering strength. It generates continuations for 10 German CLaS-
 ### `extract_llm_reps.py`: step 3
 Loads Llama-3.1-8B with Hugging Face `transformers`. For each fold, it extracts representations of the 80 held-out sentences under the five conditions. Steering uses a forward hook on `model.model.layers[L]`, which is equivalent to `blocks.{L}.hook_resid_post`, and that fold's own steering vectors. Output: `data/adsbc21/adsbc21_llama_8b_reps_tlt_steering_fold{k}.pkl`, with one representation column per condition.
 
-### `run_steering_analysis.py`: step 4
-Fold-wise RSA pipeline:
-- **Stage 1:** for each condition × fold, restricts stimuli, ERPs and representations to the fold's held-out items, checks that the item × condition grid is complete, and runs RSA. Writes `rsa_results.npz` and skips this step if the file already exists.
-- **Stage 2:** loads all folds, optionally drops the edge layers and applies Bonferroni correction, then computes the fold-mean RSM and per-fold centre of mass (COM) and COM shifts. It produces rank-correlation heatmaps, layer clustering (elbow, dendrogram, clustered heatmap, step profile) and mean ± SD RSA line plots.
+### Step 4: fold-wise RSA (not yet released)
+This step is done by `run_steering_analysis.py`, which is **not included** because it is largely built on the unreleased RSA / ERP codebase (see [Unreleased dependencies](#unreleased-dependencies)). For each steering condition and fold, it restricts the stimuli, preprocessed ERPs and LLM representations to the fold's 20 held-out items and runs layer-wise RSA against the four human RSMs (association, expectancy, N400, P600). It writes one result file per condition × fold:
 
-```bash
-python run_steering_analysis.py --study adsbc21 --llm llama31_8b --rep_name llama_8b \
-    --llm_mode tlt --steering all
 ```
-Options: `--folds`, `--k`, `--S`, `--no_heatmaps`, `--permutation_test`, `--surprisal`, `--no_bonferroni`, `--exclude_edges`.
+../results/adsbc21/rank_correlations/llama31_8b/folds/{condition}/fold{k}/rsa_results.npz
+    corr    correlation matrix (human RSMs + layers L0–L32)
+    p       p-values
+    labels  row/column labels, e.g. N4, P6, Assoc, Exp, L0 … L32
+```
+
+The three scripts below only need these `.npz` files (and, for `run_bootstrap.py`, the step-4 code itself).
 
 ### `run_diff_corr.py`: ΔRSA plots
 Computes the paired Δρ per fold (steered fold *k* − base fold *k*) and keeps only the layers after the injection layer. Plots the mean ± SD across folds for N400, P600, association and expectancy.
@@ -116,18 +118,16 @@ Several scripts here are built on an existing RSA / ERP analysis codebase. The r
 
 | Missing module / file | Needed by |
 |---|---|
+| `run_steering_analysis.py` (step 4: fold-wise RSA; `get_config`, `load_full_data`, `load_fold_data`, `build_condition_data`, `fold_path`) | `run_bootstrap.py`; produces the `rsa_results.npz` files used by `run_diff_corr.py` and `run_delta_stats.py` |
 | `llm_reps.py` (`get_hidden_states`) | `extract_llm_reps.py` |
-| `rsa.py` | `run_steering_analysis.py`, `run_bootstrap.py` |
-| `plots.py` | `run_steering_analysis.py`, `run_diff_corr.py`, `run_bootstrap.py` |
-| `preproc_erps.py` | `run_steering_analysis.py` |
-| `clustering.py` | `run_steering_analysis.py` |
-| `metrics.py` | `run_steering_analysis.py` |
-| `build_rsms.py` | `run_bootstrap.py` |
+| `rsa.py`, `build_rsms.py` | step 4, `run_bootstrap.py` |
+| `plots.py` | step 4, `run_diff_corr.py`, `run_bootstrap.py` |
+| `preproc_erps.py`, `clustering.py`, `metrics.py` | step 4 |
 | `run_analysis.py` (`get_config`) | `run_diff_corr.py` |
-| `config/adsbc21.yaml`, `config/llms.yaml` | `run_steering_analysis.py` and everything that calls `get_config` |
-| `data/adsbc21/adsbc21_stim.csv`, `adsbc21_erp.csv` (preprocessed stimulus / ERP tables) | `extract_llm_reps.py`, `run_steering_analysis.py`, `run_bootstrap.py` |
+| `config/adsbc21.yaml`, `config/llms.yaml` | step 4 and everything that calls `get_config` |
+| `data/adsbc21/adsbc21_stim.csv`, `adsbc21_erp.csv` (preprocessed stimulus / ERP tables) | `extract_llm_reps.py`, step 4, `run_bootstrap.py` |
 
-**These scripts work with only this repository and public resources:** `utils.py`, `extract_mean_acts.py` and `alpha_sweep.py`. `run_delta_stats.py` also works, as long as the per-fold `rsa_results.npz` files exist.
+**These scripts work with only this repository and public resources:** `utils.py`, `extract_mean_acts.py` and `alpha_sweep.py`. `run_delta_stats.py` also works, as long as the per-fold `rsa_results.npz` files from step 4 exist.
 
 ---
 
