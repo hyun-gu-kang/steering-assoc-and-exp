@@ -1,5 +1,19 @@
 import os
-import sys
+
+# ============================================================
+# Environment setup
+# ============================================================
+# Must run BEFORE importing transformers / transformer_lens / datasets:
+# huggingface_hub reads HF_HOME etc. at import time, so setting them
+# after the imports would silently fall back to ~/.cache/huggingface.
+
+CACHE_DIR = "/netscratch/hkang/hf_cache"
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+os.environ["HF_HOME"] = CACHE_DIR
+os.environ["TRANSFORMERS_CACHE"] = os.path.join(CACHE_DIR, "transformers")
+os.environ["HF_HUB_CACHE"] = os.path.join(CACHE_DIR, "hub")
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
 from transformer_lens import HookedTransformer
@@ -13,18 +27,6 @@ from utils import (
     force_tlens_pipeline_layout,
     verify_tlens_pipeline_layout,
 )
-
-# ============================================================
-# Environment setup
-# ============================================================
-
-CACHE_DIR = "/netscratch/hkang/hf_cache"
-os.makedirs(CACHE_DIR, exist_ok=True)
-
-os.environ["HF_HOME"] = CACHE_DIR
-os.environ["TRANSFORMERS_CACHE"] = os.path.join(CACHE_DIR, "transformers")
-os.environ["HF_HUB_CACHE"] = os.path.join(CACHE_DIR, "hub")
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 # ============================================================
 # Model configuration
@@ -43,13 +45,41 @@ BATCH_SIZE = 256
 MAX_NEW_TOKENS = 64
 
 STEERING_TYPES = ["assoc", "exp"]
-ACT_DIR = "/home/hkang/lmh/last_token_act"
+
+# Fold-wise mean activations written by extract_mean_acts.py:
+#   {ACT_DIR}/fold{k}/assoc{a}_exp{e}.pt
+# Same directory that extract_llm_reps.py reads its steering vectors from.
+ACT_DIR = f"/home/hkang/lmh/last_token_act/{MODEL_NAME}"
+
+# Calibrate with the steering vector of every CV fold, i.e. exactly the
+# vectors that are later injected in extract_llm_reps.py.
+# Set e.g. FOLDS = [0] for a quicker single-fold check.
+N_FOLDS = 6
+FOLDS = list(range(N_FOLDS))
 
 LAYERS = [8, 24]
 ALPHAS_BY_LAYER = {
     8: [1.0, 2.0, 4.0, 7.0, 11.0],
     24: [11.0, 12.0, 14.0, 17.0, 21.0],
 }
+
+# ============================================================
+# Sanity check: all fold activation files exist
+# ============================================================
+
+missing = [
+    os.path.join(ACT_DIR, f"fold{k}", f"assoc{a}_exp{e}.pt")
+    for k in FOLDS
+    for a in (0, 1)
+    for e in (0, 1)
+    if not os.path.exists(os.path.join(ACT_DIR, f"fold{k}", f"assoc{a}_exp{e}.pt"))
+]
+
+if missing:
+    raise FileNotFoundError(
+        "Mean-activation files not found (run extract_mean_acts.py first):\n"
+        + "\n".join(missing)
+    )
 
 # ============================================================
 # Load model
@@ -110,58 +140,72 @@ prompts = [
 print(f"Loaded {len(prompts)} prompts")
 
 # ============================================================
-# Run alpha calibration
+# Run alpha calibration (per fold)
 # ============================================================
-for steering_type in STEERING_TYPES:
-    all_layer_results = {}
-    steering_vector_norms = {}
+for fold in FOLDS:
+    fold_name = f"fold{fold}"
 
-    print("=" * 70)
-    print(f"Steering type: {steering_type}")
-    print(f"Layers: {LAYERS}")
-    print(f"Alphas: {ALPHAS_BY_LAYER}")
-    print("=" * 70)
+    for steering_type in STEERING_TYPES:
+        all_layer_results = {}
+        steering_vector_norms = {}
 
-    for layer in LAYERS:
-        layer_key = f"layer_{layer}"
+        print("=" * 70)
+        print(f"Fold: {fold_name} | Steering type: {steering_type}")
+        print(f"Layers: {LAYERS}")
+        print(f"Alphas: {ALPHAS_BY_LAYER}")
+        print("=" * 70)
 
-        steering_vec, steering_vector_norm = compute_diffmean(act_dir=ACT_DIR, steering_type=steering_type, layer=layer, normalize=True)
+        for layer in LAYERS:
+            layer_key = f"layer_{layer}"
 
-        steering_vector_norms[layer_key] = steering_vector_norm
+            steering_vec, steering_vector_norm = compute_diffmean(
+                act_dir=ACT_DIR,
+                steering_type=steering_type,
+                layer=layer,
+                normalize=True,
+                fold_name=fold_name,
+            )
 
-        print(
-            f"{steering_type} | "
-            f"layer {layer} | "
-            f"original vector norm = "
-            f"{steering_vector_norm:.4f}"
+            steering_vector_norms[layer_key] = steering_vector_norm
+
+            print(
+                f"{fold_name} | "
+                f"{steering_type} | "
+                f"layer {layer} | "
+                f"original vector norm = "
+                f"{steering_vector_norm:.4f}"
+            )
+
+            layer_results = alpha_sweep_steering(
+                model=model,
+                tokenizer=tokenizer,
+                prompts=prompts,
+                steering_vec=steering_vec,
+                layer=layer,
+                alphas=ALPHAS_BY_LAYER[layer],
+                device=DEVICE,
+                batch_size=BATCH_SIZE,
+                max_new_tokens=MAX_NEW_TOKENS,
+            )
+
+            all_layer_results[layer_key] = layer_results
+
+            print(f"Finished {fold_name} | {steering_type} at layer {layer}")
+
+        # -> /home/hkang/lmh/llama_8b/alpha_calibration/{steering_type}_fold{k}.json
+        save_results(
+            all_layer_results,
+            exp_name="alpha_calibration",
+            model_name=MODEL_NAME,
+            file_name=f"{steering_type}_{fold_name}",
+            extra_metadata={
+                "language(s)": LANG,
+                "fold": fold_name,
+                "act_dir": ACT_DIR,
+                "steering_type": steering_type,
+                "steering_vector_normalized": True,
+                "steering_vector_norms": steering_vector_norms,
+                "layers": LAYERS,
+                "alphas_by_layer": ALPHAS_BY_LAYER,
+            },
         )
-
-        layer_results = alpha_sweep_steering(
-            model=model,
-            tokenizer=tokenizer,
-            prompts=prompts,
-            steering_vec=steering_vec,
-            layer=layer,
-            alphas=ALPHAS_BY_LAYER[layer],
-            device=DEVICE,
-            batch_size=BATCH_SIZE,
-            max_new_tokens=MAX_NEW_TOKENS,
-        )
-
-        all_layer_results[layer_key] = layer_results
-
-        print(f"Finished {steering_type} at layer {layer}")
-
-    save_results(
-        all_layer_results,
-        exp_name="alpha_calibration",
-        model_name=MODEL_NAME,
-        file_name=steering_type,
-        extra_metadata={
-            "steering_type": steering_type,
-            "steering_vector_normalized": True,
-            "steering_vector_norms": steering_vector_norms,
-            "layers": LAYERS,
-            "alphas_by_layer": ALPHAS_BY_LAYER,
-        },
-    )

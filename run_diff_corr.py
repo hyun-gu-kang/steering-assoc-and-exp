@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pathlib import Path
 from plots import rsa_line_plot_mean_std
-from run_analysis import get_config
+from run_steering_analysis import get_config
 
 # =================
 # Configuration
